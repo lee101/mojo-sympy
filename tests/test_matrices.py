@@ -4,6 +4,8 @@ import pytest
 import sympy as sp
 
 import mojosympy as ms
+import mojosympy.matrices as matrix_module
+from mojosympy._lib import parallel_ready
 
 
 def random_matrix(rows, cols, seed):
@@ -30,6 +32,34 @@ def test_integer_matrix_multiply_parity(shape):
     b = random_matrix(inner, cols, cols + 20)
     assert ms.Matrix(a) * ms.Matrix(b) == sp.Matrix(a) * sp.Matrix(b)
     assert ms.Matrix(a) @ ms.Matrix(b) == sp.Matrix(a) @ sp.Matrix(b)
+
+
+def test_matrix_parallel_threshold_and_simd_tail_parity():
+    assert parallel_ready()
+    rows, inner, cols = 65, 129, 127
+    a = random_matrix(rows, inner, 101)
+    b = random_matrix(inner, cols, 102)
+    assert ms.Matrix(a) * ms.Matrix(b) == sp.Matrix(a) * sp.Matrix(b)
+
+
+def test_small_matrix_multiply_stays_serial(monkeypatch):
+    def unexpected_parallel_runtime():
+        raise AssertionError("small matrix initialized the parallel runtime")
+
+    monkeypatch.setattr(
+        matrix_module, "parallel_ready", unexpected_parallel_runtime
+    )
+    assert ms.Matrix([[1, 2, 3]]) * ms.Matrix(
+        [[4], [5], [6]]
+    ) == sp.Matrix([[32]])
+
+
+def test_matrix_encoding_cache_invalidated_by_mutation():
+    ours = ms.Matrix([[1, 2], [3, 4]])
+    rhs = ms.eye(2)
+    assert ours * rhs == sp.Matrix([[1, 2], [3, 4]])
+    ours[0, 0] = 9
+    assert ours * rhs == sp.Matrix([[9, 2], [3, 4]])
 
 
 def test_rational_matrix_arithmetic_parity():

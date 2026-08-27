@@ -79,12 +79,12 @@ before timing.
 
 | case | mojo-sympy | sympy | result |
 | --- | ---: | ---: | ---: |
-| Poly multiply (degree 400) | 0.364 ms | 21.920 ms | 60.28x faster |
-| Poly power (degree 5, exponent 8) | 0.060 ms | 0.162 ms | 2.69x faster |
-| expand two binomials (degree 40) | 0.001 ms | 0.003 ms | 3.04x faster |
-| Matrix multiply (120 x 120 integers) | 198.472 ms | 667.573 ms | 3.36x faster |
-| Matrix multiply (50 x 50 rationals) | 54.540 ms | 88.807 ms | 1.63x faster |
-| determinant (6 x 6 integers) | 0.247 ms | 2.451 ms | 9.94x faster |
+| Poly multiply (degree 400) | 0.238 ms | 12.398 ms | 52.16x faster |
+| Poly power (degree 5, exponent 8) | 0.037 ms | 0.100 ms | 2.74x faster |
+| expand two binomials (degree 40) | 0.001 ms | 0.002 ms | 4.03x faster |
+| Matrix multiply (120 x 120 integers) | 5.329 ms | 342.221 ms | 64.22x faster |
+| Matrix multiply (50 x 50 rationals) | 8.205 ms | 47.581 ms | 5.80x faster |
+| determinant (6 x 6 integers) | 0.145 ms | 1.600 ms | 11.00x faster |
 
 Immutable polynomial encodings and default expansion results use bounded
 caches, matching SymPy's reuse behavior without unbounded retention. Integer
@@ -106,12 +106,18 @@ restores SymPy `Rational` values afterward. Python owns inputs, outputs, and
 scratch buffers, so the shared library allocates nothing across the ABI and
 has no cross-language lifetime management.
 
-Polynomial power accumulates contiguous coefficient spans at the native int64
-SIMD width, followed by a scalar remainder loop. Large powers can split
-independent output coefficients across CPU workers. The Mojo CPU runtime is
-initialized lazily, so smaller operations stay serial.
+Polynomial power and matrix multiplication accumulate contiguous coefficient
+or row spans at the native SIMD width, followed by scalar remainder loops.
+Large powers split independent output coefficients across CPU workers, and
+large matrix products split independent output rows. The Mojo CPU runtime is
+initialized lazily, so smaller operations stay serial. Matrix wrappers retain
+their exact contiguous input encoding and invalidate it on mutation, avoiding
+repeat copies across the FFI boundary.
 
-No GPU path is included.
+No GPU path is included. The exact multiply-add loops as implemented move a
+loaded operand plus a read/modified/written accumulator for each two arithmetic
+operations, well below two operations per byte. At the covered sizes, device
+transfer and launch overhead would add cost rather than remove it.
 
 ## License
 

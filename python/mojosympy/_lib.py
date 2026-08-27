@@ -19,8 +19,8 @@ _SIGNATURES = {
     "msp_poly_derivative": ([I, I, I, I], I),
     "msp_poly_eval_i64": ([I, I, I], I),
     "msp_mat_add_i64": ([I, I, I, I, I], None),
-    "msp_mat_mul_i64": ([I, I, I, I, I, I], None),
-    "msp_mat_mul_f64": ([I, I, I, I, I, I], None),
+    "msp_mat_mul_i64": ([I, I, I, I, I, I, I], None),
+    "msp_mat_mul_f64": ([I, I, I, I, I, I, I], None),
     "msp_mat_transpose_i64": ([I, I, I, I], None),
     "msp_det_bareiss_i64": ([I, I], I),
 }

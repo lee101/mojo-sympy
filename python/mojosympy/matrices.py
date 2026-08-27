@@ -6,9 +6,14 @@ from typing import Any
 
 import numpy as np
 import sympy as _sp
+from sympy import ZZ
+from sympy.polys.matrices import DomainMatrix
+from sympy.polys.matrices.ddm import DDM
 
-from ._lib import addr, lib
+from ._lib import addr, lib, parallel_ready
 from .polys import I64_MAX, MatrixLike, Poly
+
+MATMUL_PARALLEL_THRESHOLD = 1 << 20
 
 
 def _lcm(a: int, b: int) -> int:
@@ -66,14 +71,23 @@ def _float_encoded(matrix: _sp.MatrixBase) -> np.ndarray:
 
 def _from_encoded(values: np.ndarray, denominator: int) -> "Matrix":
     rows, cols = values.shape
-    data = [_sp.Rational(int(value), denominator) for value in values.ravel()]
-    return Matrix(rows, cols, data)
+    if denominator == 1:
+        data = [[int(value) for value in row] for row in values]
+        rep = DomainMatrix.from_rep(DDM(data, (rows, cols), ZZ)).to_sparse()
+        matrix = _sp.MutableDenseMatrix._fromrep(rep)
+    else:
+        data = [_sp.Rational(int(value), denominator) for value in values.ravel()]
+        matrix = _sp.Matrix(rows, cols, data)
+    result = object.__new__(Matrix)
+    result._matrix = matrix
+    result._encoded_cache = (values, denominator)
+    return result
 
 
 class Matrix(MatrixLike):
     """Mutable dense SymPy matrix with exact Mojo arithmetic fast paths."""
 
-    __slots__ = ("_matrix",)
+    __slots__ = ("_matrix", "_encoded_cache")
 
     def __init__(self, *args, **kwargs):
         if len(args) == 1 and isinstance(args[0], Matrix):
@@ -82,6 +96,12 @@ class Matrix(MatrixLike):
             self._matrix = _sp.Matrix(args[0])
         else:
             self._matrix = _sp.Matrix(*args, **kwargs)
+        self._encoded_cache = None
+
+    def _encoded(self) -> tuple[np.ndarray, int]:
+        if self._encoded_cache is None:
+            self._encoded_cache = _encoded(self._matrix)
+        return self._encoded_cache
 
     @property
     def rows(self):
@@ -100,7 +120,7 @@ class Matrix(MatrixLike):
         if not self.rows or not self.cols:
             return Matrix(self._matrix.T)
         try:
-            source, denominator = _encoded(self._matrix)
+            source, denominator = self._encoded()
             result = np.empty((self.cols, self.rows), dtype=np.int64)
             lib().msp_mat_transpose_i64(
                 addr(source), addr(result), self.rows, self.cols
@@ -130,8 +150,8 @@ class Matrix(MatrixLike):
         if not self.rows or not self.cols:
             return Matrix(self._matrix - rhs._matrix if subtract else self._matrix + rhs._matrix)
         try:
-            a, da = _encoded(self._matrix)
-            b, db = _encoded(rhs._matrix)
+            a, da = self._encoded()
+            b, db = rhs._encoded()
             denominator = _lcm(da, db)
             scale_a = denominator // da
             scale_b = denominator // db
@@ -175,8 +195,8 @@ class Matrix(MatrixLike):
         if not self.rows or not self.cols or not rhs.cols:
             return Matrix(self._matrix * rhs._matrix)
         try:
-            a, da = _encoded(self._matrix)
-            b, db = _encoded(rhs._matrix)
+            a, da = self._encoded()
+            b, db = rhs._encoded()
             denominator = da * db
             bound = (
                 self.cols
@@ -186,6 +206,11 @@ class Matrix(MatrixLike):
             if bound > I64_MAX:
                 raise OverflowError
             result = np.empty((self.rows, rhs.cols), dtype=np.int64)
+            use_parallel = (
+                self.rows * self.cols * rhs.cols >= MATMUL_PARALLEL_THRESHOLD
+                and self.rows > 1
+                and parallel_ready()
+            )
             lib().msp_mat_mul_i64(
                 addr(a),
                 addr(b),
@@ -193,6 +218,7 @@ class Matrix(MatrixLike):
                 self.rows,
                 self.cols,
                 rhs.cols,
+                int(use_parallel),
             )
             return _from_encoded(result, denominator)
         except (TypeError, OverflowError):
@@ -201,6 +227,11 @@ class Matrix(MatrixLike):
             a = _float_encoded(self._matrix)
             b = _float_encoded(rhs._matrix)
             result = np.empty((self.rows, rhs.cols), dtype=np.float64)
+            use_parallel = (
+                self.rows * self.cols * rhs.cols >= MATMUL_PARALLEL_THRESHOLD
+                and self.rows > 1
+                and parallel_ready()
+            )
             lib().msp_mat_mul_f64(
                 addr(a),
                 addr(b),
@@ -208,6 +239,7 @@ class Matrix(MatrixLike):
                 self.rows,
                 self.cols,
                 rhs.cols,
+                int(use_parallel),
             )
             return Matrix(
                 self.rows,
@@ -262,6 +294,7 @@ class Matrix(MatrixLike):
 
     def __setitem__(self, key, value):
         self._matrix[key] = _unwrap(value)
+        self._encoded_cache = None
 
     def __iter__(self):
         return iter(self._matrix)
@@ -290,6 +323,7 @@ class Matrix(MatrixLike):
             return _wrap(attribute)
 
         def delegated(*args, **kwargs):
+            self._encoded_cache = None
             return _wrap(
                 attribute(
                     *(_unwrap(value) for value in args),
