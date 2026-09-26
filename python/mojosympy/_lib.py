@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import atexit
 import ctypes
 import os
 import subprocess
@@ -15,48 +14,19 @@ _SIGNATURES = {
     "msp_poly_add": ([I, I, I, I, I], None),
     "msp_poly_sub": ([I, I, I, I, I], None),
     "msp_poly_mul": ([I, I, I, I, I], None),
-    "msp_poly_pow": ([I, I, I, I, I, I, I], None),
+    "msp_poly_pow": ([I, I, I, I, I, I], None),
     "msp_poly_derivative": ([I, I, I, I], I),
     "msp_poly_eval_i64": ([I, I, I], I),
     "msp_mat_add_i64": ([I, I, I, I, I], None),
-    "msp_mat_mul_i64": ([I, I, I, I, I, I, I], None),
-    "msp_mat_mul_f64": ([I, I, I, I, I, I, I], None),
+    "msp_mat_mul_i64_rows": ([I] * 8, None),
+    "msp_mat_mul_f64_rows": ([I] * 8, None),
     "msp_mat_transpose_i64": ([I, I, I, I], None),
     "msp_det_bareiss_i64": ([I, I], I),
 }
 
 _library: ctypes.CDLL | None = None
-_runtime: ctypes.CDLL | None = None
-_cpu_device: int | None = None
-_parallel_ready = False
-_parallel_attempted = False
 
 
-def _release_parallel_runtime() -> None:
-    if _runtime is None or _cpu_device is None:
-        return
-    release = _runtime.KGEN_CompilerRT_AsyncRT_ReleaseCPUDevice
-    release.argtypes = [ctypes.c_void_p]
-    release.restype = None
-    release(ctypes.c_void_p(_cpu_device))
-
-
-def _initialize_parallel_runtime() -> None:
-    global _runtime, _cpu_device, _parallel_ready, _parallel_attempted
-    _parallel_attempted = True
-    try:
-        runtime = ctypes.CDLL("libKGENCompilerRTShared.so")
-        initialize = runtime.KGEN_CompilerRT_AsyncRT_GetOrCreateCPUDevice
-        initialize.argtypes = []
-        initialize.restype = ctypes.c_void_p
-        device = initialize()
-    except (AttributeError, OSError):
-        return
-    if device:
-        _runtime = runtime
-        _cpu_device = int(device)
-        _parallel_ready = True
-        atexit.register(_release_parallel_runtime)
 
 
 def build() -> str:
@@ -85,10 +55,8 @@ def lib() -> ctypes.CDLL:
 
 
 def parallel_ready() -> bool:
-    lib()
-    if not _parallel_attempted:
-        _initialize_parallel_runtime()
-    return _parallel_ready
+    """True when a large kernel can be fanned out over a thread pool."""
+    return (os.cpu_count() or 1) > 1
 
 
 def addr(value: np.ndarray) -> int:

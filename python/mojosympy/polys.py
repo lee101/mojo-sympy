@@ -9,10 +9,9 @@ import sympy as _sp
 from sympy.polys.domains import ZZ
 from sympy.polys.polyclasses import DMP
 
-from ._lib import addr, lib, parallel_ready
+from ._lib import addr, lib
 
 I64_MAX = (1 << 63) - 1
-POW_PARALLEL_THRESHOLD = 1 << 22
 
 
 def _lcm(a: int, b: int) -> int:
@@ -209,12 +208,6 @@ class Poly:
             buffers = np.empty(capacity * 2, dtype=np.int64)
             result = buffers[:capacity]
             work = buffers[capacity:]
-            max_kernel_work = len(source) * (
-                1 + max(0, exponent - 1) * (len(source) - 1)
-            )
-            use_parallel = (
-                max_kernel_work >= POW_PARALLEL_THRESHOLD and parallel_ready()
-            )
             lib().msp_poly_pow(
                 addr(source),
                 addr(result),
@@ -222,7 +215,6 @@ class Poly:
                 len(source),
                 exponent,
                 capacity,
-                int(use_parallel),
             )
             return _from_encoded(result, result_denominator, self.gens)
         except (TypeError, OverflowError):

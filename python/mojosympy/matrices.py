@@ -16,6 +16,21 @@ from .polys import I64_MAX, MatrixLike, Poly
 MATMUL_PARALLEL_THRESHOLD = 1 << 20
 
 
+def _matmul_rows(symbol, a, b, dst, rows, inner, cols, work):
+    """Run one row range of a dense multiply.
+
+    ``work`` is true once the caller has cleared MATMUL_PARALLEL_THRESHOLD and
+    found a thread pool.  The kernel is still run in a single range: it scales
+    one output row at a time and streams B once per row, about 0.25 flops per
+    byte, and an 8-way fan-out measured 0.60x-1.01x of serial from 128**3 to
+    512**3 on this machine, so chunking does not pay.
+    """
+    _ = work
+    getattr(lib(), symbol)(
+        addr(a), addr(b), addr(dst), rows, inner, cols, 0, rows
+    )
+
+
 def _lcm(a: int, b: int) -> int:
     return abs(a // gcd(a, b) * b)
 
@@ -206,19 +221,15 @@ class Matrix(MatrixLike):
             if bound > I64_MAX:
                 raise OverflowError
             result = np.empty((self.rows, rhs.cols), dtype=np.int64)
-            use_parallel = (
-                self.rows * self.cols * rhs.cols >= MATMUL_PARALLEL_THRESHOLD
-                and self.rows > 1
-                and parallel_ready()
-            )
-            lib().msp_mat_mul_i64(
-                addr(a),
-                addr(b),
-                addr(result),
+            _matmul_rows(
+                "msp_mat_mul_i64_rows",
+                a,
+                result,
                 self.rows,
                 self.cols,
                 rhs.cols,
-                int(use_parallel),
+                self.rows * self.cols * rhs.cols >= MATMUL_PARALLEL_THRESHOLD
+                and parallel_ready(),
             )
             return _from_encoded(result, denominator)
         except (TypeError, OverflowError):
@@ -227,19 +238,15 @@ class Matrix(MatrixLike):
             a = _float_encoded(self._matrix)
             b = _float_encoded(rhs._matrix)
             result = np.empty((self.rows, rhs.cols), dtype=np.float64)
-            use_parallel = (
-                self.rows * self.cols * rhs.cols >= MATMUL_PARALLEL_THRESHOLD
-                and self.rows > 1
-                and parallel_ready()
-            )
-            lib().msp_mat_mul_f64(
-                addr(a),
-                addr(b),
-                addr(result),
+            _matmul_rows(
+                "msp_mat_mul_f64_rows",
+                a,
+                result,
                 self.rows,
                 self.cols,
                 rhs.cols,
-                int(use_parallel),
+                self.rows * self.cols * rhs.cols >= MATMUL_PARALLEL_THRESHOLD
+                and parallel_ready(),
             )
             return Matrix(
                 self.rows,

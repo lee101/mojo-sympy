@@ -4,8 +4,7 @@ Python owns every buffer. Integer inputs are admitted only after the binding
 has proved that all intermediates fit in signed 64 bits.
 """
 
-from max.algorithm import parallelize
-from std.sys.info import num_physical_cores, simd_width_of
+from std.sys.info import simd_width_of
 
 comptime IW = simd_width_of[DType.int64]()
 comptime FW = simd_width_of[DType.float64]()
@@ -93,7 +92,6 @@ def poly_pow_impl(
     n: Int,
     exponent: Int,
     capacity: Int,
-    enable_parallel: Int,
 ):
     var base = ip(base_addr)
     var dst = ip(dst_addr)
@@ -112,42 +110,27 @@ def poly_pow_impl(
 
     for _ in range(exponent):
         var next_size = current + n - 1
-        if enable_parallel != 0:
-
-            @__parameter
-            def coefficient(k: Int):
-                var lo = max(0, k - (n - 1))
-                var hi = min(current - 1, k)
-                var total = Int64(0)
-                for source_i in range(lo, hi + 1):
-                    total += dst[unsafe_offset=source_i] * base[
-                        unsafe_offset=k - source_i
-                    ]
-                work[unsafe_offset=k] = total
-
-            parallelize[coefficient](next_size, min(next_size, num_physical_cores()))
-        else:
-            var z = 0
-            while z + IW <= next_size:
-                work.unsafe_store(z, SIMD[DType.int64, IW](0))
-                z += IW
-            while z < next_size:
-                work[unsafe_offset=z] = 0
-                z += 1
-            for source_i in range(current):
-                var scale = SIMD[DType.int64, IW](dst[unsafe_offset=source_i])
-                var j = 0
-                while j + IW <= n:
-                    var updated = work.unsafe_load[width=IW](source_i + j) + (
-                        scale * base.unsafe_load[width=IW](j)
-                    )
-                    work.unsafe_store(source_i + j, updated)
-                    j += IW
-                while j < n:
-                    work[unsafe_offset=source_i + j] += (
-                        dst[unsafe_offset=source_i] * base[unsafe_offset=j]
-                    )
-                    j += 1
+        var z = 0
+        while z + IW <= next_size:
+            work.unsafe_store(z, SIMD[DType.int64, IW](0))
+            z += IW
+        while z < next_size:
+            work[unsafe_offset=z] = 0
+            z += 1
+        for source_i in range(current):
+            var scale = SIMD[DType.int64, IW](dst[unsafe_offset=source_i])
+            var j = 0
+            while j + IW <= n:
+                var updated = work.unsafe_load[width=IW](source_i + j) + (
+                    scale * base.unsafe_load[width=IW](j)
+                )
+                work.unsafe_store(source_i + j, updated)
+                j += IW
+            while j < n:
+                work[unsafe_offset=source_i + j] += (
+                    dst[unsafe_offset=source_i] * base[unsafe_offset=j]
+                )
+                j += 1
         i = 0
         while i + IW <= next_size:
             dst.unsafe_store(i, work.unsafe_load[width=IW](i))
@@ -166,17 +149,8 @@ def poly_pow(
     n: Int,
     exponent: Int,
     capacity: Int,
-    enable_parallel: Int,
 ) abi("C"):
-    poly_pow_impl(
-        base_addr,
-        dst_addr,
-        work_addr,
-        n,
-        exponent,
-        capacity,
-        enable_parallel,
-    )
+    poly_pow_impl(base_addr, dst_addr, work_addr, n, exponent, capacity)
 
 
 @export("msp_poly_derivative")
@@ -238,23 +212,23 @@ def mat_add_i64(
             i += 1
 
 
-@export("msp_mat_mul_i64")
-def mat_mul_i64(
+@export("msp_mat_mul_i64_rows")
+def mat_mul_i64_rows(
     a_addr: Int,
     b_addr: Int,
     dst_addr: Int,
     rows: Int,
     inner: Int,
     cols: Int,
-    enable_parallel: Int,
+    row_start: Int,
+    row_stop: Int,
 ) abi("C"):
     var a = ip(a_addr)
     var b = ip(b_addr)
     var dst = ip(dst_addr)
-    for i in range(rows * cols):
-        dst[unsafe_offset=i] = 0
-    @__parameter
-    def multiply_row(r: Int):
+    for r in range(row_start, row_stop):
+        for j in range(cols):
+            dst[unsafe_offset=r * cols + j] = 0
         for k in range(inner):
             var scale = SIMD[DType.int64, IW](
                 a[unsafe_offset=r * inner + k]
@@ -272,30 +246,25 @@ def mat_mul_i64(
                     * b[unsafe_offset=k * cols + j]
                 )
                 j += 1
-    if enable_parallel != 0:
-        parallelize[multiply_row](rows, min(rows, num_physical_cores()))
-    else:
-        for r in range(rows):
-            multiply_row(r)
 
 
-@export("msp_mat_mul_f64")
-def mat_mul_f64(
+@export("msp_mat_mul_f64_rows")
+def mat_mul_f64_rows(
     a_addr: Int,
     b_addr: Int,
     dst_addr: Int,
     rows: Int,
     inner: Int,
     cols: Int,
-    enable_parallel: Int,
+    row_start: Int,
+    row_stop: Int,
 ) abi("C"):
     var a = fp(a_addr)
     var b = fp(b_addr)
     var dst = fp(dst_addr)
-    for i in range(rows * cols):
-        dst[unsafe_offset=i] = 0.0
-    @__parameter
-    def multiply_row(r: Int):
+    for r in range(row_start, row_stop):
+        for j in range(cols):
+            dst[unsafe_offset=r * cols + j] = 0.0
         for k in range(inner):
             var scale = SIMD[DType.float64, FW](
                 a[unsafe_offset=r * inner + k]
@@ -313,11 +282,6 @@ def mat_mul_f64(
                     * b[unsafe_offset=k * cols + j]
                 )
                 j += 1
-    if enable_parallel != 0:
-        parallelize[multiply_row](rows, min(rows, num_physical_cores()))
-    else:
-        for r in range(rows):
-            multiply_row(r)
 
 
 @export("msp_mat_transpose_i64")
